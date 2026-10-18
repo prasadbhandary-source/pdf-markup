@@ -504,22 +504,46 @@ private fun DocumentScreen(
         }
     }
 
-    fun share() {
-        if (!pdf.canSave) {
-            toast("This file can be viewed, but annotations can't be written into it.")
-            return
-        }
+    /** Shares the PDF (with current annotations). [whatsApp] sends it straight to WhatsApp. */
+    fun share(whatsApp: Boolean = false) {
         scope.launch {
             busy = "Preparing…"
             try {
-                val f = buildOutput()
+                val f = if (pdf.canSave) {
+                    buildOutput()
+                } else {
+                    // Can't write annotations into this file: share it as it is.
+                    withContext(Dispatchers.IO) {
+                        val dir = File(context.cacheDir, "shared").apply { mkdirs() }
+                        dir.listFiles()?.forEach { it.delete() }
+                        var name = pdf.displayName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                        if (!name.lowercase().endsWith(".pdf")) name += ".pdf"
+                        File(dir, name).also { pdf.origFile.copyTo(it, overwrite = true) }
+                    }
+                }
                 val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", f)
-                val send = Intent(Intent.ACTION_SEND).apply {
+                fun sendIntent(pkg: String?) = Intent(Intent.ACTION_SEND).apply {
                     type = "application/pdf"
                     putExtra(Intent.EXTRA_STREAM, uri)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    if (pkg != null) setPackage(pkg)
                 }
-                context.startActivity(Intent.createChooser(send, "Share PDF"))
+                if (whatsApp) {
+                    // WhatsApp, then WhatsApp Business.
+                    val sent = listOf("com.whatsapp", "com.whatsapp.w4b").any { pkg ->
+                        try {
+                            context.startActivity(sendIntent(pkg)); true
+                        } catch (_: ActivityNotFoundException) {
+                            false
+                        }
+                    }
+                    if (!sent) toast("WhatsApp isn't installed on this phone.")
+                } else {
+                    context.startActivity(Intent.createChooser(sendIntent(null), "Share PDF"))
+                }
+                if (!pdf.canSave && state.marks.isNotEmpty()) {
+                    toast("Shared the original file — annotations can't be written into this one.")
+                }
             } catch (e: ActivityNotFoundException) {
                 toast("No app available to share with.")
             } catch (e: Exception) {
@@ -566,6 +590,9 @@ private fun DocumentScreen(
                     IconButton(onClick = { save() }, enabled = busy == null) {
                         Icon(AppIcons.Save, "Save", tint = if (state.dirty) Brand else LocalContentColorFallback)
                     }
+                    IconButton(onClick = { share(whatsApp = true) }, enabled = busy == null) {
+                        Icon(AppIcons.Chat, "Send via WhatsApp", tint = WhatsAppGreen)
+                    }
                     Box {
                         IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, "More") }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
@@ -574,7 +601,12 @@ private fun DocumentScreen(
                                 onClick = { menuOpen = false; createCopy.launch(suggestedCopyName()) },
                             )
                             DropdownMenuItem(
-                                text = { Text("Share") },
+                                text = { Text("Send via WhatsApp") },
+                                leadingIcon = { Icon(AppIcons.Chat, null, tint = WhatsAppGreen) },
+                                onClick = { menuOpen = false; share(whatsApp = true) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Share…") },
                                 leadingIcon = { Icon(Icons.Filled.Share, null) },
                                 onClick = { menuOpen = false; share() },
                             )
@@ -727,6 +759,7 @@ private fun DocumentScreen(
 }
 
 private val LocalContentColorFallback = Color(0xFF3B3535)
+private val WhatsAppGreen = Color(0xFF25D366)
 
 @Composable
 private fun ToolBar(
